@@ -57,24 +57,19 @@ def parse_input(filepath: str) -> SystemConfig:
     tiles = []
     holes = []
 
+    KEYWORDS = {"OBSTACLES", "TILES", "HOLES"}
+
     while idx < len(tokens):
         keyword = next_token()
 
         if keyword == "OBSTACLES":
-            while idx < len(tokens) and not tokens[idx].isalpha() or (
-                idx < len(tokens) and tokens[idx] not in ("TILES", "HOLES") and tokens[idx].lstrip('-').isdigit()
-            ):
-                if idx >= len(tokens):
-                    break
-                tok = tokens[idx]
-                if tok in ("TILES", "HOLES"):
-                    break
+            while idx + 1 < len(tokens) and tokens[idx] not in KEYWORDS:
                 x = next_int()
                 y = next_int()
                 obstacles.append((x, y))
 
         elif keyword == "TILES":
-            while idx < len(tokens) and tokens[idx] not in ("OBSTACLES", "HOLES"):
+            while idx + 3 < len(tokens) and tokens[idx] not in KEYWORDS:
                 count = next_int()
                 color = next_token()
                 x = next_int()
@@ -82,7 +77,7 @@ def parse_input(filepath: str) -> SystemConfig:
                 tiles.append((count, color, x, y))
 
         elif keyword == "HOLES":
-            while idx < len(tokens) and tokens[idx] not in ("OBSTACLES", "TILES"):
+            while idx + 3 < len(tokens) and tokens[idx] not in KEYWORDS:
                 depth = next_int()
                 color = next_token()
                 x = next_int()

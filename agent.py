@@ -206,6 +206,20 @@ class Agent:
 
         my_color = self.color
         pos = tuple(self.position)
+        obstacles = set(tuple(o) for o in state["obstacles"])
+        width = state["width"]
+        height = state["height"]
+
+        def cell_accessible(x, y):
+            """Check if a cell can be stood on (not obstacle, not unfilled hole, in bounds)."""
+            if x < 0 or x >= width or y < 0 or y >= height:
+                return False
+            if (x, y) in obstacles:
+                return False
+            hole_key = f"{x},{y}"
+            if hole_key in state["holes"] and state["holes"][hole_key]["depth"] > 0:
+                return False
+            return True
 
         # Parse holes and tiles
         holes = {
@@ -219,62 +233,83 @@ class Agent:
 
         # Find holes of my color
         my_holes = [(p, h) for p, h in holes.items() if h["color"] == my_color and h["depth"] > 0]
+        any_holes = [(p, h) for p, h in holes.items() if h["depth"] > 0]
         # Find tiles of any color (prioritize my color)
         my_tiles = [(p, colors) for p, colors in tiles.items() if my_color in colors]
         any_tiles = [(p, colors) for p, colors in tiles.items() if colors]
 
+        def get_valid_adjacent(hole_pos):
+            """Return list of (adj_pos, direction) that are accessible and in-bounds."""
+            valid = []
+            for direction in DIRECTIONS:
+                dx, dy = DIR_DELTA[direction]
+                # adj is the cell FROM which we use the tile (opposite of direction offset)
+                adj = (hole_pos[0] - dx, hole_pos[1] - dy)
+                if cell_accessible(adj[0], adj[1]):
+                    valid.append((adj, direction))
+            return valid
+
         if not self.carried_tile:
-            # Need to pick a tile
-            if not my_tiles and not any_tiles:
-                # Nothing to do, wander
+            # ---- Need to pick a tile ----
+            target_tiles = my_tiles if my_tiles else any_tiles
+            if not target_tiles:
+                # Nothing to pick anywhere, wander randomly
                 self.move(random.choice(DIRECTIONS))
                 return
 
-            target_tiles = my_tiles if my_tiles else any_tiles
-            # Pick nearest tile cell
-            target_pos = min(target_tiles, key=lambda x: abs(x[0][0] - pos[0]) + abs(x[0][1] - pos[1]))[0]
+            # Pick nearest tile cell (Manhattan distance)
+            target_pos = min(
+                target_tiles,
+                key=lambda x: abs(x[0][0] - pos[0]) + abs(x[0][1] - pos[1])
+            )[0]
 
             if pos == target_pos:
-                # Try to pick
+                # We're on the tile — pick it
                 tile_colors = tiles.get(pos, [])
                 if my_color in tile_colors:
                     self.pick(my_color)
                 elif tile_colors:
                     self.pick(tile_colors[0])
+                else:
+                    # Tile disappeared (picked by another agent), recalculate next step
+                    self.move(random.choice(DIRECTIONS))
             else:
                 self._navigate_to(target_pos, state)
+
         else:
-            # Have a tile, find a hole to fill
-            if not my_holes:
-                # Drop tile and wait
+            # ---- Have a tile, find a hole to fill ----
+            target_holes = my_holes if my_holes else any_holes
+
+            if not target_holes:
+                # No holes left, drop tile
                 self.drop_tile()
                 return
 
-            # Find nearest hole of my color
-            target_hole_pos = min(my_holes, key=lambda x: abs(x[0][0] - pos[0]) + abs(x[0][1] - pos[1]))[0]
-
-            # Need to be adjacent to hole
-            adjacent_cells = []
-            for direction in DIRECTIONS:
-                dx, dy = DIR_DELTA[direction]
-                adj = (target_hole_pos[0] - dx, target_hole_pos[1] - dy)  # cell from which we use
-                adjacent_cells.append((adj, direction))
-
-            # Find which adjacent cell is reachable and closest
-            best = None
+            # Find the hole with the best accessible adjacent cell
+            best_hole = None
+            best_adj = None
+            best_dir = None
             best_dist = float('inf')
-            for adj_pos, direction in adjacent_cells:
-                dist = abs(adj_pos[0] - pos[0]) + abs(adj_pos[1] - pos[1])
-                if dist < best_dist:
-                    best_dist = dist
-                    best = (adj_pos, direction)
 
-            if best:
-                adj_pos, direction = best
-                if pos == adj_pos:
-                    self.use_tile(direction)
-                else:
-                    self._navigate_to(adj_pos, state)
+            for hole_pos, hole_info in target_holes:
+                valid_adjs = get_valid_adjacent(hole_pos)
+                for adj_pos, direction in valid_adjs:
+                    dist = abs(adj_pos[0] - pos[0]) + abs(adj_pos[1] - pos[1])
+                    if dist < best_dist:
+                        best_dist = dist
+                        best_hole = hole_pos
+                        best_adj = adj_pos
+                        best_dir = direction
+
+            if best_adj is None:
+                # All holes are completely surrounded — wander
+                self.move(random.choice(DIRECTIONS))
+                return
+
+            if pos == best_adj:
+                self.use_tile(best_dir)
+            else:
+                self._navigate_to(best_adj, state)
 
     def _communicate_intentions(self, other_agents: List['Agent'], state: dict):
         """Simple communication: broadcast next intended action to other agents."""
