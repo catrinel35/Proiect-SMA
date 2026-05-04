@@ -23,7 +23,7 @@ def main():
     if len(sys.argv) >= 2:
         input_file = sys.argv[1]
     else:
-        input_file = "system.txt"
+        input_file = "tests/system.txt"
 
     print(f"[MAIN] Loading configuration from: {input_file}")
     try:
