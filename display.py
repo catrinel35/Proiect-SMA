@@ -1,14 +1,7 @@
-"""
-Display module for the Tile World MAS.
-Provides text-based grid visualization to the console.
-"""
-
 import time
 from typing import Dict, List, Tuple, Optional
 from environment import Environment
 
-
-# ANSI color codes for terminal output
 ANSI_COLORS = {
     "blue":    "\033[34m",
     "green":   "\033[32m",
@@ -34,16 +27,13 @@ def colorize(text: str, color: str) -> str:
 
 
 def short_color(color: str, length: int = 3) -> str:
-    """Return uppercase abbreviation of color."""
     return color[:length].upper()
 
 
 def render_grid(env: Environment) -> str:
-    """Render the grid as a text table."""
     W = env.width
     H = env.height
 
-    # Build cell contents
     cells: Dict[Tuple[int, int], List[str]] = {(x, y): [] for x in range(W) for y in range(H)}
 
     # Obstacles
@@ -71,12 +61,10 @@ def render_grid(env: Environment) -> str:
         marker = f"@{short_color(agent.color, 3)}{carry}"
         cells[(ax, ay)].append(colorize(marker, agent.color))
 
-    # Build output
     col_width = 12
     separator = "+" + (("-" * col_width + "+") * W)
 
     lines = []
-    # Header row
     header = " " * 3
     for x in range(W):
         header += f"{'  ' + str(x):<{col_width}}"
@@ -84,7 +72,6 @@ def render_grid(env: Environment) -> str:
     lines.append(separator)
 
     for y in range(H):
-        # Each row may need multiple sub-lines if cells have multiple items
         max_items = max(len(cells[(x, y)]) for x in range(W))
         max_items = max(max_items, 1)
 
@@ -93,7 +80,6 @@ def render_grid(env: Environment) -> str:
             for x in range(W):
                 items = cells[(x, y)]
                 item = items[sub] if sub < len(items) else ""
-                # strip ANSI for padding calculation
                 visible_len = len(_strip_ansi(item))
                 padding = col_width - visible_len - 1
                 row += "|" + item + " " * max(0, padding)

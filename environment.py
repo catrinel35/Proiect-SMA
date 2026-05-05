@@ -1,8 +1,3 @@
-"""
-Environment module for the Tile World Multi-Agent System.
-Manages the grid state and processes agent operations.
-"""
-
 import threading
 import time
 import queue

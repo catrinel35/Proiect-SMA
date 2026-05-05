@@ -1,25 +1,15 @@
-"""
-Main entry point for the Tile World Multi-Agent System.
-Usage:
-    python main.py [input_file]
-    python main.py              (reads from system.txt)
-"""
-
 import sys
 import time
-import threading
 
 from parser import parse_input
 from environment import Environment
 from agent import Agent
 from display import display_state
 
-# Display refresh interval in milliseconds
 DISPLAY_INTERVAL_MS = 2000
 
 
 def main():
-    # Determine input file
     if len(sys.argv) >= 2:
         input_file = sys.argv[1]
     else:
@@ -35,7 +25,6 @@ def main():
     print(f"[MAIN] Config: {config.N} agents, grid {config.W}x{config.H}, "
           f"t={config.t}ms, T={config.T}ms")
 
-    # Build environment
     env = Environment(width=config.W, height=config.H, operation_time_ms=config.t)
 
     for obs in config.obstacles:
@@ -47,7 +36,6 @@ def main():
     for depth, color, x, y in config.holes:
         env.add_hole(x, y, color, depth)
 
-    # Build agents
     agents: list[Agent] = []
     for i in range(config.N):
         color = config.colors[i]
@@ -57,21 +45,17 @@ def main():
         agents.append(agent)
         print(f"[MAIN] Agent '{color}' created at position {pos}")
 
-    # Start environment processing loop
     env.start_time = time.time()
     env.start()
     print("[MAIN] Environment started.")
 
-    # Initial display
     display_state(env, [])
 
-    # Start agents
     total_time_s = config.T / 1000.0
     for agent in agents:
         agent.start(agents, total_time_s)
     print(f"[MAIN] All {config.N} agents started.")
 
-    # Display loop
     end_time = env.start_time + total_time_s
     display_interval_s = DISPLAY_INTERVAL_MS / 1000.0
 
@@ -83,12 +67,10 @@ def main():
     except KeyboardInterrupt:
         print("\n[MAIN] Interrupted by user.")
 
-    # Stop everything
     for agent in agents:
         agent.stop()
     env.stop()
 
-    # Final display
     print("\n" + "=" * 60)
     print("SIMULATION ENDED")
     print("=" * 60)

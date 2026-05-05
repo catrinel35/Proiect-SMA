@@ -1,8 +1,3 @@
-"""
-Agent module for the Tile World Multi-Agent System.
-Each agent runs in its own thread and communicates with the environment and other agents.
-"""
-
 import threading
 import queue
 import time
@@ -48,7 +43,6 @@ class Agent:
         self._last_state_op_step = -1
         self._op_step = 0
 
-        # Simple planning state
         self._current_goal = None
         self._path = []
 
@@ -66,7 +60,6 @@ class Agent:
         msg = Message(sender_id=self.agent_id, receiver_id=other_agent.agent_id, content=content)
         other_agent.inbox.put(msg)
         self._log(f"MSG -> {other_agent.color}: {content.get('type', '?')}")
-        # Log to environment log buffer too
         self.env._log(f"[NEG][{self.color} -> {other_agent.color}] {content}")
 
     def receive_messages(self) -> List[Message]:
@@ -132,10 +125,8 @@ class Agent:
     def get_state(self) -> dict:
         return self.env.get_state(self.agent_id)
 
-    # ---- Simple planning / strategy ----
 
     def _bfs(self, start: Tuple[int, int], goal: Tuple[int, int], state: dict) -> List[Direction]:
-        """BFS pathfinding on the current grid state. Returns list of directions."""
         obstacles = set(tuple(o) for o in state["obstacles"])
         holes = {
             tuple(int(x) for x in k.split(",")): v
@@ -162,7 +153,6 @@ class Agent:
         while q:
             cur = q.popleft()
             if cur == goal:
-                # reconstruct
                 path = []
                 while parent[cur][0] is not None:
                     path.append(parent[cur][1])
@@ -181,7 +171,6 @@ class Agent:
         return []  # no path found
 
     def _navigate_to(self, target: Tuple[int, int], state: dict) -> bool:
-        """Move one step toward target. Returns True if already there."""
         pos = tuple(self.position)
         if pos == target:
             return True
@@ -189,19 +178,10 @@ class Agent:
         if path:
             self.move(path[0])
         else:
-            # no path, try random move
             self.move(random.choice(DIRECTIONS))
         return False
 
     def _simple_strategy(self):
-        """
-        Simple strategy for Phase 1:
-        1. Find a hole of my color.
-        2. Find a tile of my color.
-        3. Navigate to tile, pick it.
-        4. Navigate adjacent to hole, use tile.
-        5. Repeat.
-        """
         state = self.get_state()
 
         my_color = self.color
@@ -211,7 +191,6 @@ class Agent:
         height = state["height"]
 
         def cell_accessible(x, y):
-            """Check if a cell can be stood on (not obstacle, not unfilled hole, in bounds)."""
             if x < 0 or x >= width or y < 0 or y >= height:
                 return False
             if (x, y) in obstacles:
@@ -231,61 +210,52 @@ class Agent:
             for k, v in state["tiles"].items()
         }
 
-        # Find holes of my color
         my_holes = [(p, h) for p, h in holes.items() if h["color"] == my_color and h["depth"] > 0]
         any_holes = [(p, h) for p, h in holes.items() if h["depth"] > 0]
-        # Find tiles of any color (prioritize my color)
+        # Find tiles of any color
         my_tiles = [(p, colors) for p, colors in tiles.items() if my_color in colors]
         any_tiles = [(p, colors) for p, colors in tiles.items() if colors]
 
         def get_valid_adjacent(hole_pos):
-            """Return list of (adj_pos, direction) that are accessible and in-bounds."""
             valid = []
             for direction in DIRECTIONS:
                 dx, dy = DIR_DELTA[direction]
-                # adj is the cell FROM which we use the tile (opposite of direction offset)
                 adj = (hole_pos[0] - dx, hole_pos[1] - dy)
                 if cell_accessible(adj[0], adj[1]):
                     valid.append((adj, direction))
             return valid
 
         if not self.carried_tile:
-            # ---- Need to pick a tile ----
             target_tiles = my_tiles if my_tiles else any_tiles
             if not target_tiles:
                 # Nothing to pick anywhere, wander randomly
                 self.move(random.choice(DIRECTIONS))
                 return
 
-            # Pick nearest tile cell (Manhattan distance)
+            # Pick nearest tile cell
             target_pos = min(
                 target_tiles,
                 key=lambda x: abs(x[0][0] - pos[0]) + abs(x[0][1] - pos[1])
             )[0]
 
             if pos == target_pos:
-                # We're on the tile — pick it
                 tile_colors = tiles.get(pos, [])
                 if my_color in tile_colors:
                     self.pick(my_color)
                 elif tile_colors:
                     self.pick(tile_colors[0])
                 else:
-                    # Tile disappeared (picked by another agent), recalculate next step
+                    # Tile disappeared, recalculate next step
                     self.move(random.choice(DIRECTIONS))
             else:
                 self._navigate_to(target_pos, state)
 
         else:
-            # ---- Have a tile, find a hole to fill ----
             target_holes = my_holes if my_holes else any_holes
 
             if not target_holes:
-                # No holes left, drop tile
                 self.drop_tile()
                 return
-
-            # Find the hole with the best accessible adjacent cell
             best_hole = None
             best_adj = None
             best_dir = None
@@ -302,7 +272,6 @@ class Agent:
                         best_dir = direction
 
             if best_adj is None:
-                # All holes are completely surrounded — wander
                 self.move(random.choice(DIRECTIONS))
                 return
 
@@ -312,7 +281,6 @@ class Agent:
                 self._navigate_to(best_adj, state)
 
     def _communicate_intentions(self, other_agents: List['Agent'], state: dict):
-        """Simple communication: broadcast next intended action to other agents."""
         holes = {
             tuple(int(x) for x in k.split(",")): v
             for k, v in state["holes"].items()
@@ -336,7 +304,6 @@ class Agent:
 
         self._log(f"Started at position {tuple(self.position)}")
 
-        # Communicate initial intentions
         state = self.get_state()
         self._communicate_intentions(other_agents, state)
 
@@ -347,7 +314,6 @@ class Agent:
             for msg in msgs:
                 self._log(f"MSG from {msg.sender_id}: {msg.content}")
 
-            # Execute simple strategy
             self._simple_strategy()
             step += 1
 

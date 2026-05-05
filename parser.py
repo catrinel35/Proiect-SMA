@@ -1,8 +1,3 @@
-"""
-Input parser for the Tile World MAS.
-Reads the system configuration file.
-"""
-
 import re
 from dataclasses import dataclass, field
 from typing import List, Tuple
@@ -26,7 +21,6 @@ def parse_input(filepath: str) -> SystemConfig:
     with open(filepath, "r") as f:
         content = f.read()
 
-    # Tokenize: split by any whitespace
     tokens = re.split(r'\s+', content.strip())
     idx = 0
 
