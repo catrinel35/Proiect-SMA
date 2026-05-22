@@ -2,7 +2,7 @@ import threading
 import queue
 import time
 import random
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from environment import Environment, Operation, OperationType, Direction
@@ -13,10 +13,11 @@ DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 DIR_DELTA = {
     Direction.NORTH: (0, -1),
     Direction.SOUTH: (0, 1),
-    Direction.EAST: (1, 0),
-    Direction.WEST: (-1, 0),
+    Direction.EAST:  (1, 0),
+    Direction.WEST:  (-1, 0),
 }
 
+OUTSOURCE_THRESHOLD = 5   # Manhattan distance before considering outsourcing
 
 class StepType(Enum):
     MOVE     = auto()
@@ -40,10 +41,15 @@ class Task:
     adj_pos:    Tuple[int, int]
     use_dir:    Direction
     steps:      List[PlanStep] = field(default_factory=list)
+    outsourced: bool           = False
+    reward:     int            = 0
+    requester:  str            = ""
 
     def describe(self) -> str:
+        tag = f" [NEGOTIATED +{self.reward}pts from {self.requester}]" \
+              if self.outsourced else ""
         return (f"pick {self.tile_color} at {self.tile_pos} "
-                f"-> fill hole at {self.hole_pos} from {self.adj_pos}")
+                f"-> fill hole at {self.hole_pos} from {self.adj_pos}{tag}")
 
 
 class Message:
@@ -76,193 +82,141 @@ class Agent:
         self._plan:           List[Task]     = []
         self._step_queue:     List[PlanStep] = []
         self._reserved_tiles: set            = set()
+        self._all_agents:     List           = []
 
     def _log(self, msg: str, tag: str = "AGT"):
-        if self.start_time:
-            elapsed = time.time() - self.start_time
-            line = f"[{elapsed:.3f}][{tag}][{self.color}] {msg}"
-        else:
-            line = f"[{tag}][{self.color}] {msg}"
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        line = f"[{elapsed:.3f}][{tag}][{self.color}] {msg}"
         self.message_log.append(line)
         print(line, flush=True)
 
-    def send_message(self, other_agent: 'Agent', content: dict):
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        msg = Message(sender_id=self.agent_id, receiver_id=other_agent.agent_id, content=content)
-        other_agent.inbox.put(msg)
-        self._log(f"MSG -> {other_agent.color}: {content.get('type', '?')}")
-        self.env._log(f"[NEG][{self.color} -> {other_agent.color}] {content}")
+    def send_message(self, other: 'BaseAgent', content: dict):
+        other.inbox.put(Message(self.agent_id, other.agent_id, content))
+        self.env._log(f"[NEG][{self.color} -> {other.color}] "
+                      f"{content.get('type','?')}: {content}")
 
     def receive_messages(self) -> List[Message]:
-        messages = []
+        msgs = []
         while not self.inbox.empty():
-            try:
-                messages.append(self.inbox.get_nowait())
-            except queue.Empty:
-                break
-        return messages
+            try:    msgs.append(self.inbox.get_nowait())
+            except queue.Empty: break
+        return msgs
+
+    def _find_agent(self, agent_id: str) -> Optional['BaseAgent']:
+        for ag in self._all_agents:
+            if ag.agent_id == agent_id:
+                return ag
+        return None
 
     def _do_operation(self, op_type: OperationType, **kwargs) -> dict:
         resp_q = queue.Queue()
-        op = Operation(
-            op_type=op_type,
-            agent_id=self.agent_id,
-            args=kwargs,
-            response_queue=resp_q,
-        )
+        op = Operation(op_type=op_type, agent_id=self.agent_id,
+                       args=kwargs, response_queue=resp_q)
         self._op_step += 1
         result = self.env.send_operation(op)
         if result["success"]:
-            self._update_local_state_after_op(op_type, kwargs)
+            self._sync_local(op_type, kwargs)
         return result
 
-    def _update_local_state_after_op(self, op_type: OperationType, args: dict):
+    def _sync_local(self, op_type: OperationType, args: dict):
         if op_type == OperationType.MOVE:
-            direction = args["direction"]
-            dx, dy = DIR_DELTA[direction]
+            dx, dy = DIR_DELTA[args["direction"]]
             self.position[0] += dx
             self.position[1] += dy
         elif op_type == OperationType.PICK:
             self.carried_tile = args["color"]
-        elif op_type == OperationType.DROP:
-            self.carried_tile = None
-        elif op_type == OperationType.USE_TILE:
+        elif op_type in (OperationType.DROP, OperationType.USE_TILE):
             self.carried_tile = None
 
-    def move(self, direction: Direction) -> bool:
-        result = self._do_operation(OperationType.MOVE, direction=direction)
-        return result["success"]
-
-    def pick(self, color: str) -> bool:
-        result = self._do_operation(OperationType.PICK, color=color)
-        return result["success"]
-
+    def move(self, d: Direction) -> bool:
+        return self._do_operation(OperationType.MOVE, direction=d)["success"]
+    def pick(self, c: str) -> bool:
+        return self._do_operation(OperationType.PICK, color=c)["success"]
     def drop_tile(self) -> bool:
-        result = self._do_operation(OperationType.DROP)
-        return result["success"]
-
-    def use_tile(self, direction: Direction) -> bool:
-        result = self._do_operation(OperationType.USE_TILE, direction=direction)
-        return result["success"]
-
-    def transfer_points(self, target_agent_id: str, points: int) -> bool:
-        result = self._do_operation(
-            OperationType.TRANSFER_POINTS,
-            agent_id=target_agent_id,
-            points=points,
-        )
-        return result["success"]
-
+        return self._do_operation(OperationType.DROP)["success"]
+    def use_tile(self, d: Direction) -> bool:
+        return self._do_operation(OperationType.USE_TILE, direction=d)["success"]
+    def transfer_points(self, target_id: str, pts: int) -> bool:
+        return self._do_operation(OperationType.TRANSFER_POINTS,
+                                  agent_id=target_id, points=pts)["success"]
     def get_state(self) -> dict:
         return self.env.get_state(self.agent_id)
 
 
-    def _bfs(self, start: Tuple[int, int], goal: Tuple[int, int], state: dict) -> List[Direction]:
-        obstacles = set(tuple(o) for o in state["obstacles"])
-        holes = {
-            tuple(int(x) for x in k.split(",")): v
-            for k, v in state["holes"].items()
-        }
-        width = state["width"]
-        height = state["height"]
+    def _bfs(self, start: Tuple[int,int], goal: Tuple[int,int],
+             state: dict) -> List[Direction]:
+        from collections import deque
+        obs   = set(tuple(o) for o in state["obstacles"])
+        holes = {tuple(int(c) for c in k.split(",")): v
+                 for k, v in state["holes"].items()}
+        W, H  = state["width"], state["height"]
 
-        def passable(x, y):
-            if x < 0 or x >= width or y < 0 or y >= height:
-                return False
-            if (x, y) in obstacles:
-                return False
-            pos = (x, y)
-            if pos in holes and holes[pos]["depth"] > 0 and pos != goal:
+        def ok(x, y):
+            if not (0 <= x < W and 0 <= y < H): return False
+            if (x, y) in obs: return False
+            if (x, y) in holes and holes[(x,y)]["depth"] > 0 and (x,y) != goal:
                 return False
             return True
 
-        from collections import deque
-        visited = {start: None}  # pos -> (prev_pos, direction)
-        q = deque([start])
         parent = {start: (None, None)}
-
+        q = deque([start])
         while q:
             cur = q.popleft()
             if cur == goal:
                 path = []
                 while parent[cur][0] is not None:
-                    path.append(parent[cur][1])
-                    cur = parent[cur][0]
-                path.reverse()
-                return path
+                    path.append(parent[cur][1]); cur = parent[cur][0]
+                path.reverse(); return path
+            for d in DIRECTIONS:
+                dx, dy = DIR_DELTA[d]; nxt = (cur[0]+dx, cur[1]+dy)
+                if nxt not in parent and ok(*nxt):
+                    parent[nxt] = (cur, d); q.append(nxt)
+        return []
 
-            for direction in DIRECTIONS:
-                dx, dy = DIR_DELTA[direction]
-                nx, ny = cur[0] + dx, cur[1] + dy
-                npos = (nx, ny)
-                if npos not in parent and passable(nx, ny):
-                    parent[npos] = (cur, direction)
-                    q.append(npos)
-
-        return []  # no path found
-
-    def _navigate_to(self, target: Tuple[int, int], state: dict) -> bool:
-        pos = tuple(self.position)
-        if pos == target:
-            return True
-        path = self._bfs(pos, target, state)
-        if path:
-            self.move(path[0])
-        else:
-            self.move(random.choice(DIRECTIONS))
-        return False
-
+    def _manhattan(self, a: Tuple[int,int], b: Tuple[int,int]) -> int:
+        return abs(a[0]-b[0]) + abs(a[1]-b[1])
 
     def _parse_state(self, state: dict):
         holes = {tuple(int(c) for c in k.split(",")): v
                  for k, v in state["holes"].items()}
         tiles = {tuple(int(c) for c in k.split(",")): v
                  for k, v in state["tiles"].items()}
-        obstacles = set(tuple(o) for o in state["obstacles"])
-        return holes, tiles, obstacles, state["width"], state["height"]
+        obs   = set(tuple(o) for o in state["obstacles"])
+        return holes, tiles, obs, state["width"], state["height"]
 
-    def _cell_accessible(self, x, y, obstacles, holes, W, H) -> bool:
-        if not (0 <= x < W and 0 <= y < H):
-            return False
-        if (x, y) in obstacles:
-            return False
-        if (x, y) in holes and holes[(x, y)]["depth"] > 0:
-            return False
+    def _cell_accessible(self, x, y, obs, holes, W, H) -> bool:
+        if not (0 <= x < W and 0 <= y < H): return False
+        if (x, y) in obs: return False
+        if (x, y) in holes and holes[(x,y)]["depth"] > 0: return False
         return True
 
-    def _valid_adjacent(self, hole_pos, obstacles, holes, W, H) -> list:
+    def _valid_adjacent(self, hole_pos, obs, holes, W, H) -> list:
         result = []
         for d in DIRECTIONS:
             dx, dy = DIR_DELTA[d]
-            adj = (hole_pos[0] - dx, hole_pos[1] - dy)
-            if self._cell_accessible(*adj, obstacles, holes, W, H):
+            adj = (hole_pos[0]-dx, hole_pos[1]-dy)
+            if self._cell_accessible(*adj, obs, holes, W, H):
                 result.append((adj, d))
         return result
 
     def _build_task_steps(self, task: Task, state: dict) -> List[PlanStep]:
         steps = []
         pos   = tuple(self.position)
-
         for d in self._bfs(pos, task.tile_pos, state):
             steps.append(PlanStep(StepType.MOVE, direction=d))
-
         steps.append(PlanStep(StepType.PICK, color=task.tile_color))
-
         for d in self._bfs(task.tile_pos, task.adj_pos, state):
             steps.append(PlanStep(StepType.MOVE, direction=d))
-
         steps.append(PlanStep(StepType.USE_TILE, direction=task.use_dir))
-
         return steps
 
-    def _build_plan(self, state: dict, other_agents: List['Agent']) -> List[Task]:
-        holes, tiles, obstacles, W, H = self._parse_state(state)
+    def _build_plan(self, state: dict, other_agents: List['BaseAgent']) -> List[Task]:
+        holes, tiles, obs, W, H = self._parse_state(state)
 
         my_holes = sorted(
             [(p, h) for p, h in holes.items()
              if h["color"] == self.color and h["depth"] > 0],
-            key=lambda x: x[1]["depth"],
-            reverse=True
+            key=lambda x: x[1]["depth"], reverse=True
         )
 
         if not my_holes:
@@ -276,44 +230,52 @@ class Agent:
 
         my_tiles_expanded = []
         for p, cs in tiles.items():
-            if p in reserved_by_others:
-                continue
+            if p in reserved_by_others: continue
             for _ in range(cs.count(self.color)):
                 my_tiles_expanded.append(p)
 
-        pos  = tuple(self.position)
-        plan = []
-        used_counts = {}  # pos -> how many times already assigned in this plan
+        pos         = tuple(self.position)
+        plan        = []
+        used_counts = {}
 
         for hole_pos, hole_info in my_holes:
-            adjs = self._valid_adjacent(hole_pos, obstacles, holes, W, H)
+            adjs = self._valid_adjacent(hole_pos, obs, holes, W, H)
             if not adjs:
-                self._log(f"Hole {hole_pos} has no accessible adjacent cells, skipping.", "PLN")
+                self._log(f"Hole {hole_pos} has no adjacent cells, skipping.", "PLN")
                 continue
 
             for _ in range(hole_info["depth"]):
                 available = [p for p in set(my_tiles_expanded)
                              if my_tiles_expanded.count(p) > used_counts.get(p, 0)]
                 if not available:
-                    self._log(f"No more tiles available for hole {hole_pos}.", "PLN")
+                    self._log(f"No more tiles for hole {hole_pos}.", "PLN")
                     break
 
                 sim_pos   = plan[-1].adj_pos if plan else pos
                 best_tile = min(available,
-                    key=lambda p: abs(p[0] - sim_pos[0]) + abs(p[1] - sim_pos[1]))
-
+                    key=lambda p: self._manhattan(p, sim_pos))
                 best_adj, best_dir = min(adjs,
-                    key=lambda a: abs(a[0][0] - best_tile[0]) + abs(a[0][1] - best_tile[1]))
+                    key=lambda a: self._manhattan(a[0], best_tile))
 
-                plan.append(Task(
+                dist = self._manhattan(pos, best_tile) + \
+                       self._manhattan(best_tile, best_adj)
+
+                task = Task(
                     tile_pos=best_tile, tile_color=self.color,
                     hole_pos=hole_pos, adj_pos=best_adj, use_dir=best_dir,
-                ))
+                )
+
+                outsourced = self._negotiate_in_plan(
+                    task, dist, state, other_agents)
+
+                if not outsourced:
+                    plan.append(task)
+
                 used_counts[best_tile] = used_counts.get(best_tile, 0) + 1
 
         self._reserved_tiles = set(used_counts.keys())
 
-        self._log(f"New plan: {len(plan)} task(s).", "PLN")
+        self._log(f"New plan: {len(plan)} own task(s).", "PLN")
         for i, t in enumerate(plan):
             self._log(f"  Task {i+1}: {t.describe()}", "PLN")
 
@@ -329,22 +291,18 @@ class Agent:
         return plan
 
     def _plan_still_valid(self, state: dict) -> bool:
-
-        if not self._plan:
-            return False
+        if not self._plan: return False
         task = self._plan[0]
         holes, tiles, _, _, _ = self._parse_state(state)
-
         tile_ok = (self.carried_tile == task.tile_color or
-                   (task.tile_pos in tiles and task.tile_color in tiles[task.tile_pos]))
-        hole_ok = (task.hole_pos in holes and holes[task.hole_pos]["depth"] > 0)
+                   (task.tile_pos in tiles and
+                    task.tile_color in tiles[task.tile_pos]))
+        hole_ok = (task.hole_pos in holes and
+                   holes[task.hole_pos]["depth"] > 0)
         return tile_ok and hole_ok
 
     def _execute_next_step(self, state: dict):
-
-        if not self._step_queue:
-            return
-
+        if not self._step_queue: return
         step = self._step_queue[0]
 
         if step.step_type == StepType.MOVE:
@@ -364,64 +322,78 @@ class Agent:
 
         elif step.step_type == StepType.USE_TILE:
             if self.use_tile(step.direction):
+                task = self._plan[0] if self._plan else None
                 self._log("Hole filled successfully!", "PLN")
                 self._step_queue.pop(0)
-                if self._plan:
-                    self._plan.pop(0)   # task complete
+                self._on_task_complete(task)
+                if self._plan: self._plan.pop(0)
                 self._step_queue = []
             else:
                 self._log("UseTile failed. Replanning.", "PLN")
                 self._invalidate_plan()
 
         elif step.step_type == StepType.DROP:
-            self.drop_tile()
-            self._step_queue.pop(0)
+            self.drop_tile(); self._step_queue.pop(0)
 
     def _invalidate_plan(self):
-        """Discard the current plan. A new one will be built next iteration."""
         self._plan           = []
         self._step_queue     = []
         self._reserved_tiles = set()
+        self._on_invalidate()
         if self.carried_tile:
             self.drop_tile()
 
 
+    def _negotiate_in_plan(self, task: Task, dist: int,
+                           state: dict,
+                           other_agents: List['Agent']) -> bool:
+        return False
+
+    def _handle_negotiation_message(self, msg: Message, state: dict):
+        self._log(f"MSG from {msg.sender_id}: {msg.content}", "AGT")
+
+    def _pre_execute_hook(self, state: dict, other_agents: List['Agent']):
+        pass
+
+    def _on_task_complete(self, task: Optional[Task]):
+        pass
+
+    def _on_invalidate(self):
+        pass
+
+
     def _communicate_intentions(self, other_agents: List['Agent'], state: dict):
-        holes = {
-            tuple(int(x) for x in k.split(",")): v
-            for k, v in state["holes"].items()
-        }
+        holes = {tuple(int(x) for x in k.split(",")): v
+                 for k, v in state["holes"].items()}
         my_holes = [p for p, h in holes.items()
                     if h["color"] == self.color and h["depth"] > 0]
-
         if my_holes:
-            target = my_holes[0]
             for other in other_agents:
                 if other.agent_id != self.agent_id:
                     self.send_message(other, {
-                        "type": "intention",
-                        "agent": self.color,
-                        "action": f"heading to fill hole at {target}",
+                        "type":   "intention",
+                        "agent":  self.color,
+                        "action": f"heading to fill hole at {my_holes[0]}",
                     })
 
-    def _handle_message(self, msg: Message):
-        """Process a received message."""
-        c = msg.content
-        if c.get("type") == "plan_announcement":
-            self._log(
-                f"Received plan from {msg.sender_id}: "
-                f"{len(c.get('tasks', []))} task(s).", "NEG"
-            )
-        elif c.get("type") == "intention":
-            self._log(f"Received intention from {msg.sender_id}: {c.get('action')}", "NEG")
+    def _handle_message(self, msg: Message, state: dict,
+                        other_agents: List['Agent']):
+        t = msg.content.get("type", "")
+        if t == "plan_announcement":
+            self._log(f"Received plan from {msg.sender_id}: "
+                      f"{len(msg.content.get('tasks',[]))} task(s).", "NEG")
+        elif t == "intention":
+            self._log(f"Intention from {msg.sender_id}: "
+                      f"{msg.content.get('action')}", "NEG")
         else:
-            self._log(f"MSG from {msg.sender_id}: {c}", "AGT")
+            self._handle_negotiation_message(msg, state)
 
 
     def run(self, other_agents: List['Agent'], total_time_s: float):
-        self._running = True
-        self.start_time = self.env.start_time
-        end_time = self.start_time + total_time_s
+        self._running    = True
+        self.start_time  = self.env.start_time
+        self._all_agents = other_agents
+        end_time         = self.start_time + total_time_s
 
         self._log(f"Started at position {tuple(self.position)}")
 
@@ -430,10 +402,13 @@ class Agent:
 
         while self._running and time.time() < end_time:
 
-            for msg in self.receive_messages():
-                self._handle_message(msg)
-
             state = self.get_state()
+
+            for msg in self.receive_messages():
+                self._handle_message(msg, state, other_agents)
+
+            # Subclass hook (e.g. resolve CFPs, check pending offers)
+            self._pre_execute_hook(state, other_agents)
 
             if not self._plan or not self._plan_still_valid(state):
                 if self._plan:
@@ -445,16 +420,16 @@ class Agent:
                 task             = self._plan[0]
                 task.steps       = self._build_task_steps(task, state)
                 self._step_queue = list(task.steps)
-                self._log(
-                    f"Executing task: {task.describe()} ({len(self._step_queue)} steps)", "PLN")
+                self._log(f"Executing task: {task.describe()} "
+                          f"({len(self._step_queue)} steps)", "PLN")
 
-            # 5. Execute the next step
             if self._step_queue:
                 self._execute_next_step(state)
             else:
                 time.sleep(0.05)
 
-        self._log(f"Stopped. Final points: {self.env.agents[self.agent_id].points}")
+        self._log(f"Stopped. Final points: "
+                  f"{self.env.agents[self.agent_id].points}")
 
     def start(self, other_agents: List['Agent'], total_time_s: float):
         self._thread = threading.Thread(
