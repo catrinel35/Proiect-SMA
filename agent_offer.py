@@ -1,28 +1,3 @@
-"""
-agent_offer.py — Offer / Counteroffer negotiation (Algorithm 2).
-
-Protocol (bilateral, one-to-one):
-  Initiator (has task too far):
-    1. Send PROPOSE to nearest other agent:
-       "Do task X for Y points"
-    2. If ACCEPT  -> task is delegated, pay Y points after completion
-    3. If COUNTER -> evaluate counteroffer (different reward amount)
-       3a. If acceptable -> ACCEPT, delegate task
-       3b. If not        -> REJECT, keep task in own plan
-    4. If REJECT  -> keep task in own plan
-
-  Responder:
-    1. Receive PROPOSE
-    2. Evaluate cost of task
-    3. If reward >= cost: ACCEPT
-    4. If reward < cost but worth negotiating: COUNTER with higher reward
-    5. If not worth it: REJECT
-
-Difference from CNP:
-- CNP is one-to-many (broadcast), winner-takes-all
-- Offer/Counteroffer is one-to-one, iterative, allows compromise
-"""
-
 from typing import Optional, Dict, List, Tuple
 from agent import Agent, Task, Message, OUTSOURCE_THRESHOLD
 from environment import Direction
@@ -43,28 +18,17 @@ class AgentOffer(Agent):
     def __init__(self, agent_id, color, start_pos, env):
         super().__init__(agent_id, color, start_pos, env)
 
-        # Pending proposals WE sent: neg_id -> info
         self._pending_proposals: Dict[str, dict] = {}
-        # Tasks we agreed to do for others: neg_id -> Task
         self._accepted_tasks:    Dict[str, Task]  = {}
-        # Already negotiated task keys (avoid re-negotiating same task)
         self._negotiated_keys:   set              = set()
-
-    # ── Hook: try to negotiate task before adding to own plan ─
 
     def _negotiate_in_plan(self, task: Task, dist: int,
                            state: dict, other_agents: list) -> bool:
-        """
-        If task is far, propose it to the nearest available agent.
-        Returns True if proposal sent (task removed from own plan for now).
-        The task will be re-added if rejected/timeout.
-        """
         neg_key = (task.tile_pos, task.hole_pos)
         if dist <= OUTSOURCE_THRESHOLD or not other_agents \
                 or neg_key in self._negotiated_keys:
             return False
 
-        # Find nearest other agent that is free (not carrying a tile)
         candidates = [ag for ag in other_agents
                       if ag.agent_id != self.agent_id
                       and ag.carried_tile is None]
@@ -105,12 +69,8 @@ class AgentOffer(Agent):
         self._negotiated_keys.add(neg_key)
         return True   # temporarily remove from own plan
 
-    # ── Hook: check pending proposals each iteration ──────────
-
     def _pre_execute_hook(self, state: dict, other_agents: list):
         self._check_pending_proposals()
-
-    # ── Hook: pay reward after completing accepted task ────────
 
     def _on_task_complete(self, task):
         if task and task.outsourced and task.requester:
@@ -119,18 +79,10 @@ class AgentOffer(Agent):
                 self._log(f"Paying {task.reward} pts to {task.requester}.", "NEG")
                 self.transfer_points(req.agent_id, task.reward)
 
-    # ── Hook: reset on replan ─────────────────────────────────
-
     def _on_invalidate(self):
         self._negotiated_keys = set()
 
-    # ── Proposal timeout check ────────────────────────────────
-
     def _check_pending_proposals(self):
-        """
-        If a proposal has timed out without a response,
-        add the task back to own plan.
-        """
         now = time.time()
         for neg_id, p in list(self._pending_proposals.items()):
             if p["resolved"]: continue
@@ -139,8 +91,6 @@ class AgentOffer(Agent):
                     f"PROPOSE {neg_id[:14]}: timeout, doing task myself.", "NEG")
                 self._plan.append(p["task"])
                 p["resolved"] = True
-
-    # ── Responder: handle incoming PROPOSE ───────────────────
 
     def _handle_propose(self, msg: Message, state: dict):
         c       = msg.content
@@ -233,8 +183,6 @@ class AgentOffer(Agent):
                 "reason": reason,
             })
 
-    # ── Initiator: handle responses to own proposals ──────────
-
     def _handle_accept(self, msg: Message):
         neg_id = msg.content["neg_id"]
         p = self._pending_proposals.get(neg_id)
@@ -299,8 +247,6 @@ class AgentOffer(Agent):
                 f"{msg.content.get('reason','')}. Doing task myself.", "NEG")
             p["resolved"] = True
             self._plan.append(p["task"])
-
-    # ── Message handler ───────────────────────────────────────
 
     def _handle_negotiation_message(self, msg: Message, state: dict):
         t = msg.content.get("type", "")
