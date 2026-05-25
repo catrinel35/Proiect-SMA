@@ -1,8 +1,10 @@
 import sys
 import time
+
 from parser import parse_input
 from environment import Environment
 from display import display_state
+from agent import Agent
 from agent_cnp   import AgentCNP
 from agent_offer import AgentOffer
 
@@ -10,8 +12,8 @@ DISPLAY_INTERVAL_MS = 2000
 
 
 def main():
-    input_file = sys.argv[1] if len(sys.argv) >= 2 else "system.txt"
-    agent_mode = sys.argv[2] if len(sys.argv) >= 3 else "mixed"
+    input_file = sys.argv[1] if len(sys.argv) >= 2 else "tests/system.txt"
+    agent_mode = sys.argv[2] if len(sys.argv) >= 3 else ""
 
     print(f"[MAIN] Loading configuration from: {input_file}")
     try:
@@ -39,19 +41,22 @@ def main():
 
         if agent_mode == "cnp":
             AgentClass = AgentCNP
+            agent = AgentClass(agent_id=color, color=color,
+                               start_pos=pos, env=env)
+            kind = "CNP" if AgentClass is AgentCNP else "OCC"
+            print(f"[MAIN] Agent '{color}' ({kind}) created at {pos}")
         elif agent_mode == "occ":
             AgentClass = AgentOffer
+            agent = AgentClass(agent_id=color, color=color,
+                               start_pos=pos, env=env)
+            kind = "CNP" if AgentClass is AgentCNP else "OCC"
+            print(f"[MAIN] Agent '{color}' ({kind}) created at {pos}")
         else:
-            # mixed: even indices -> CNP, odd -> OCC (they compete)
-            AgentClass = AgentCNP if i % 2 == 0 else AgentOffer
+            agent = Agent(agent_id=color, color=color,start_pos=pos, env=env)
+            print(f"[MAIN] Agent '{color}' created at position {pos}")
 
-        agent = AgentClass(agent_id=color, color=color,
-                           start_pos=pos, env=env)
         env.add_agent(color, color, pos[0], pos[1])
         agents.append(agent)
-
-        kind = "CNP" if AgentClass is AgentCNP else "OCC"
-        print(f"[MAIN] Agent '{color}' ({kind}) created at {pos}")
 
     env.start_time = time.time()
     env.start()
