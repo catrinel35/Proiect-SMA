@@ -11,10 +11,6 @@ MAX_REWARD      = 40
 
 
 class AgentOffer(Agent):
-    """
-    Agent using Offer/Counteroffer negotiation.
-    """
-
     def __init__(self, agent_id, color, start_pos, env):
         super().__init__(agent_id, color, start_pos, env)
 
