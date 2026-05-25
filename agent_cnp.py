@@ -1,63 +1,73 @@
 from typing import Optional, Dict, List, Tuple
-from agent import Agent, Task, Message, OUTSOURCE_THRESHOLD
+from agent import Agent, Task, Message
+OUTSOURCE_THRESHOLD = 3
 from environment import Environment, Direction
 import time
 
-
-BID_WINDOW = 0.6   # seconds to collect bids
-MIN_REWARD = 5
-MAX_REWARD = 30
+BID_WINDOW = 0.6
+MIN_REWARD = 8
+MAX_REWARD = 40
 
 
 class AgentCNP(Agent):
-    """
-    Agent using Contract Net Protocol for negotiation.
-    """
-
     def __init__(self, agent_id, color, start_pos, env):
         super().__init__(agent_id, color, start_pos, env)
 
         self._emitted_cfp_keys: set       = set()
-        self._open_cfps:        Dict      = {}   # task_id -> cfp info + bids
+        self._notified_tasks:  set       = set()
+        self._paid_tasks:      set       = set()
+        self._open_cfps:        Dict      = {}
         self._awarded_to:       Dict[str,str] = {}
-
-    # ── Hook: outsource task if too far ──────────────────────
 
     def _negotiate_in_plan(self, task: Task, dist: int,
                            state: dict, other_agents: list) -> bool:
-        """
-        If the task distance exceeds threshold, emit a CFP.
-        Returns True = outsourced (skip from own plan).
-        """
-        cfp_key = (task.tile_pos, task.hole_pos)
-        if dist > OUTSOURCE_THRESHOLD and other_agents \
-                and cfp_key not in self._emitted_cfp_keys:
-            self._emitted_cfp_keys.add(cfp_key)
-            reward = min(MAX_REWARD, max(MIN_REWARD, dist * 2))
-            self._issue_cfp(task, reward, other_agents)
-            return True   # don't add to own plan
-        return False
 
-    # ── Hook: resolve CFPs each iteration ────────────────────
+        cfp_key = (task.tile_pos, task.hole_pos)
+        if dist <= OUTSOURCE_THRESHOLD:
+            return False
+        if cfp_key in self._emitted_cfp_keys:
+            return False
+        if not other_agents:
+            return False
+
+        my_dist_to_tile = self._manhattan(
+            tuple(self.position), task.tile_pos)
+        best_other_dist = min(
+            self._manhattan(tuple(ag.position), task.tile_pos)
+            for ag in other_agents if ag.agent_id != self.agent_id
+        )
+
+        if best_other_dist >= my_dist_to_tile - 2:
+            return False
+
+        reward = min(MAX_REWARD, max(MIN_REWARD, dist * 2))
+
+        self._emitted_cfp_keys.add(cfp_key)
+        self._issue_cfp(task, reward, other_agents)
+        return True
 
     def _pre_execute_hook(self, state: dict, other_agents: list):
         self._resolve_cfps(other_agents, state)
 
-    # ── Hook: pay reward after completing outsourced task ────
-
     def _on_task_complete(self, task):
         if task and task.outsourced and task.requester:
+            tid = task.requester + str(task.tile_pos)
+            if tid in self._notified_tasks:
+                return   # already notified, skip duplicate
+            self._notified_tasks.add(tid)
             req = self._find_agent(task.requester)
             if req:
-                self._log(f"Paying {task.reward} pts to {task.requester}.", "NEG")
-                self.transfer_points(req.agent_id, task.reward)
-
-    # ── Hook: reset CFP state on replan ──────────────────────
+                self._log(f"Task done. Notifying {task.requester} to pay {task.reward} pts.", "NEG")
+                self.send_message(req, {
+                    "type":    "task_done",
+                    "task_id": tid,
+                    "reward":  task.reward,
+                    "worker":  self.agent_id,
+                })
 
     def _on_invalidate(self):
         self._emitted_cfp_keys = set()
 
-    # ── CFP emission ──────────────────────────────────────────
 
     def _issue_cfp(self, task: Task, reward: int, agents: list):
         task_id = (f"{self.agent_id}_{task.hole_pos}"
@@ -89,8 +99,6 @@ class AgentCNP(Agent):
             "awarded":  False,
         }
 
-    # ── Bid evaluation (bidder side) ──────────────────────────
-
     def _evaluate_bid(self, cfp: dict, state: dict) -> Optional[int]:
         tile_pos = tuple(cfp["tile_pos"])
         adj_pos  = tuple(cfp["adj_pos"])
@@ -116,8 +124,10 @@ class AgentCNP(Agent):
             return
 
         reward = c["reward"]
-        if reward < cost // 2:
-            self._log(f"CFP {task_id[:14]}: reward {reward} too low (cost {cost}). Refuse.", "NEG")
+
+        if reward < cost:
+            self._log(
+                f"CFP {task_id[:14]}: reward {reward} < cost {cost}. Refuse.", "NEG")
             self._send_refuse(msg, task_id)
             return
 
@@ -140,7 +150,6 @@ class AgentCNP(Agent):
                 "bidder":  self.agent_id,
             })
 
-    # ── Resolve expired CFPs (requester side) ─────────────────
 
     def _resolve_cfps(self, agents: list, state: dict):
         now     = time.time()
@@ -203,7 +212,6 @@ class AgentCNP(Agent):
         self._plan.insert(0, task)
         self._step_queue = []
 
-    # ── Message handler ───────────────────────────────────────
 
     def _handle_negotiation_message(self, msg: Message, state: dict):
         t = msg.content.get("type", "")
@@ -221,5 +229,15 @@ class AgentCNP(Agent):
             self._handle_award(msg)
         elif t == "reject":
             self._log(f"REJECT: lost contract {msg.content['task_id'][:14]}", "NEG")
+        elif t == "task_done":
+            tid = msg.content["task_id"]
+            if tid in self._paid_tasks:
+                return
+            self._paid_tasks.add(tid)
+            worker = self._find_agent(msg.content["worker"])
+            reward = msg.content["reward"]
+            if worker:
+                self._log(f"Task done by {msg.content['worker']}. Paying {reward} pts.", "NEG")
+                self.transfer_points(worker.agent_id, reward)
         else:
             self._log(f"Unknown MSG from {msg.sender_id}: {msg.content}", "AGT")
