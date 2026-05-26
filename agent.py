@@ -90,7 +90,7 @@ class Agent:
         self.message_log.append(line)
         print(line, flush=True)
 
-    def send_message(self, other: 'BaseAgent', content: dict):
+    def send_message(self, other: 'Agent', content: dict):
         other.inbox.put(Message(self.agent_id, other.agent_id, content))
         self.env._log(f"[NEG][{self.color} -> {other.color}] "
                       f"{content.get('type','?')}: {content}")
@@ -102,7 +102,7 @@ class Agent:
             except queue.Empty: break
         return msgs
 
-    def _find_agent(self, agent_id: str) -> Optional['BaseAgent']:
+    def _find_agent(self, agent_id: str) -> Optional['Agent']:
         for ag in self._all_agents:
             if ag.agent_id == agent_id:
                 return ag
@@ -210,7 +210,7 @@ class Agent:
         steps.append(PlanStep(StepType.USE_TILE, direction=task.use_dir))
         return steps
 
-    def _build_plan(self, state: dict, other_agents: List['BaseAgent']) -> List[Task]:
+    def _build_plan(self, state: dict, other_agents: List['Agent']) -> List[Task]:
         holes, tiles, obs, W, H = self._parse_state(state)
 
         my_holes = sorted(
