@@ -15,8 +15,9 @@ class AgentOffer(Agent):
         super().__init__(agent_id, color, start_pos, env)
 
         self._pending_proposals: Dict[str, dict] = {}
-        self._accepted_tasks:    Dict[str, Task]  = {}
-        self._negotiated_keys:   set              = set()
+        self._accepted_tasks: Dict[str, Task] = {}
+        self._negotiated_keys: set = set()
+        self._paid_tasks: set = set()  # guard against duplicate payments
 
     def _negotiate_in_plan(self, task: Task, dist: int,
                            state: dict, other_agents: list) -> bool:
@@ -72,8 +73,14 @@ class AgentOffer(Agent):
         if task and task.outsourced and task.requester:
             req = self._find_agent(task.requester)
             if req:
-                self._log(f"Paying {task.reward} pts to {task.requester}.", "NEG")
-                self.transfer_points(req.agent_id, task.reward)
+                self._log(
+                    f"Task done. Notifying {task.requester} to pay {task.reward} pts.", "NEG")
+                self.send_message(req, {
+                    "type":    "task_done",
+                    "neg_id":  task.requester + str(task.tile_pos),
+                    "reward":  task.reward,
+                    "worker":  self.agent_id,
+                })
 
     def _on_invalidate(self):
         self._negotiated_keys = set()
@@ -244,11 +251,23 @@ class AgentOffer(Agent):
             p["resolved"] = True
             self._plan.append(p["task"])
 
+    def _handle_task_done(self, msg: Message):
+        tid = msg.content["neg_id"]
+        if tid in self._paid_tasks:
+            return
+        self._paid_tasks.add(tid)
+        worker = self._find_agent(msg.content["worker"])
+        reward = msg.content["reward"]
+        if worker:
+            self._log(f"Task done by {msg.content['worker']}. Paying {reward} pts.", "NEG")
+            self.transfer_points(worker.agent_id, reward)
+
     def _handle_negotiation_message(self, msg: Message, state: dict):
         t = msg.content.get("type", "")
-        if   t == "propose": self._handle_propose(msg, state)
-        elif t == "accept":  self._handle_accept(msg)
-        elif t == "counter": self._handle_counter(msg, state)
-        elif t == "reject":  self._handle_reject(msg)
+        if   t == "propose":   self._handle_propose(msg, state)
+        elif t == "accept":    self._handle_accept(msg)
+        elif t == "counter":   self._handle_counter(msg, state)
+        elif t == "reject":    self._handle_reject(msg)
+        elif t == "task_done": self._handle_task_done(msg)
         else:
             self._log(f"Unknown MSG from {msg.sender_id}: {msg.content}", "AGT")
